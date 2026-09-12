@@ -44,12 +44,12 @@ description: 维护符合 Open Knowledge Format（OKF）的仓库内 context-kg 
 检索的完成条件是问题的各个子意图已有足够、相互一致且时效可信的证据；达到条件后立即停止，不为“可能还有更多”继续扩张上下文。
 
 1. 提取查询中的精确键（concept 路径、文件名、Case ID、符号或接口名）、主题词、预期 `type`、适用范围和“当前/目标/历史”时间语义。先读仓库指令与根 `index.md`，按目录描述进入一个或少量相关分支。
-2. 有精确键或索引路由不够明确时，运行随附的无状态搜索脚本。它先匹配路径和 frontmatter 元数据，只返回带命中原因的候选路径；元数据没有候选且已用 `--scope` 限定分支时才自动回退正文，未限定范围时由调用方选择 scope 或显式授权 `--body`。普通查询默认排除 `deprecated` 和 `tasks/session-summaries/`，历史查询显式使用 `--history`。
+2. 有精确键或索引路由不够明确时，运行随附的无状态搜索脚本。它先匹配路径和 frontmatter 元数据，只返回带命中原因的候选路径；元数据没有候选且已用 `--scope` 限定分支时才自动回退正文，未限定范围时由调用方选择 scope 或显式授权 `--body`。普通查询默认排除 `deprecated` 和 `tasks/session-summaries/`，历史查询显式使用 `--history`。需要程序消费时使用 `--json`。
 3. 候选相关性按精确 ID/路径或 Case ID、标题、索引描述与 `description/tags/type`、正文命中、直接关系依次降低；可信度另按当前适用范围、`status`、`verified`、`stale_after` 和原始来源判断。关键词分高不能让 `draft`、过期或历史内容冒充当前结论，文件更新时间也不是权威性证据。
 4. 只打开最高置信的少量 concept。仅当它们不能完整回答时，沿标准 Markdown 链接或 `sources[].resource` 继续一层；每扩一层重新检查停止条件。索引缺失时只列当前层直属项并读取其 frontmatter 合成临时导航，不递归预读子树正文。
 5. 对易漂移事实、`draft`、已过 `stale_after`、来源不足或相互冲突的内容，转向代码、配置、测试或原始来源核验，并在回答中说明知识库状态。零候选时先扩大到全库元数据检索，最后才做限定范围的正文搜索。
 
-不要把 `log.md`、整个目录、全部反向链接或 Session Summary 作为普通领域查询的默认上下文。诊断检索质量时，优先报告展开的索引层数、候选数和读取正文数，而不是只报告易波动的耗时。
+不要把 `log.md`、整个目录、全部反向链接或 Session Summary 作为普通领域查询的默认上下文。每次检索报告脚本输出的扫描文档数、元数据候选数、正文读取数、返回数、过期数和回退方式；另行记录调用方实际展开的索引层数。耗时只用于性能观察，不能替代健康指标。诊断整体质量时，运行 `context_kg_eval.py` 计算 Recall@k、MRR、零命中率和正文回退率。
 
 ## 增量维护
 
@@ -154,10 +154,18 @@ Concept 间关系使用标准 Markdown 链接：优先使用 bundle-root 相对�
 
 ## 校验
 
-运行随附脚本：
+先安装脚本依赖，再运行随附校验：
 
 ```bash
+python3 -m pip install -r ~/.codex/skills/knowledge-maintainer/requirements.txt
 python3 ~/.codex/skills/knowledge-maintainer/scripts/context_kg_lint.py ./context-kg
 ```
 
 脚本检查 OKF v0.2 的 concept frontmatter、必填 `type`、可选字段结构、保留文件格式、索引链接和日志日期顺序。缺少可选索引或存在断链会报告警告，不会被误判为 OKF 不合规。随后运行与改动相关的仓库检查，例如 `git diff --check`。
+
+维护检索行为时，同时运行固定评测集：
+
+```bash
+python3 ~/.codex/skills/knowledge-maintainer/scripts/context_kg_eval.py \
+  ./context-kg ./retrieval_cases.json
+```

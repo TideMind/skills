@@ -1,0 +1,20 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  knowledge-maintainer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: skills/knowledge-maintainer/requirements.txt
+      - run: python -m pip install -r skills/knowledge-maintainer/requirements.txt
+      - run: python -m unittest discover -s skills/knowledge-maintainer/tests -v
+      - run: python skills/knowledge-maintainer/scripts/context_kg_lint.py context-kg
+      - run: python skills/knowledge-maintainer/scripts/context_kg_eval.py skills/knowledge-maintainer/tests/fixtures/context-kg skills/knowledge-maintainer/tests/fixtures/retrieval_cases.json

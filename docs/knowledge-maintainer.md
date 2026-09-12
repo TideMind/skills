@@ -116,9 +116,10 @@ python3 ~/.codex/skills/knowledge-maintainer/scripts/context_kg_search.py ./cont
 python3 ~/.codex/skills/knowledge-maintainer/scripts/context_kg_search.py ./context-kg "TC-ORDER-042" --type "Test Case"
 python3 ~/.codex/skills/knowledge-maintainer/scripts/context_kg_search.py ./context-kg "订单 幂等" --scope business
 python3 ~/.codex/skills/knowledge-maintainer/scripts/context_kg_search.py ./context-kg "旧缓存方案" --history --body
+python3 ~/.codex/skills/knowledge-maintainer/scripts/context_kg_search.py ./context-kg "订单 幂等" --scope business --index-levels-expanded 2 --json
 ```
 
-候选相关性和可信度分开判断：精确 ID、标题和元数据命中负责定位，`status`、`verified`、`stale_after` 和原始来源决定能否作为当前答案。满足问题全部子意图且没有未核验冲突后立即停止，不继续预读无关分支。
+候选相关性和可信度分开判断：精确 ID、标题和元数据命中负责定位，`status`、`verified`、`stale_after` 和原始来源决定能否作为当前答案。满足问题全部子意图且没有未核验冲突后立即停止，不继续预读无关分支。命令会输出扫描文档数、元数据候选数、正文读取数、返回数、过期数、回退方式和耗时；`--json` 返回相同指标及候选详情，适合接入健康看板。
 
 ### 5. 沉淀缺陷复盘和测试知识
 
@@ -214,6 +215,7 @@ context-kg/
 安装 Skill 后，在目标项目根目录运行：
 
 ```bash
+python3 -m pip install -r ~/.codex/skills/knowledge-maintainer/requirements.txt
 python3 ~/.codex/skills/knowledge-maintainer/scripts/context_kg_lint.py ./context-kg
 ```
 
@@ -225,6 +227,15 @@ python3 ~/.codex/skills/knowledge-maintainer/scripts/context_kg_lint.py ./contex
 git diff --check
 git status --short --untracked-files=all
 ```
+
+维护检索排序或 PageIndex 路由时，应准备独立 JSON 评测集并运行：
+
+```bash
+python3 ~/.codex/skills/knowledge-maintainer/scripts/context_kg_eval.py \
+  ./context-kg ./retrieval_cases.json
+```
+
+报告包含 Recall@k、MRR、零命中率、正文回退率和正文读取总数。仓库内 `tests/fixtures/retrieval_cases.json` 可作为格式示例。
 
 ## 常见问题
 

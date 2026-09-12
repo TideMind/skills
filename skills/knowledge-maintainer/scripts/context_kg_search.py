@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
-from dataclasses import dataclass
+import time
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
@@ -47,6 +49,19 @@ class SearchResult:
     status: str
     freshness: str
     score_reason: str
+
+
+@dataclass(frozen=True)
+class SearchMetrics:
+    markdown_discovered: int
+    documents_scanned: int
+    metadata_candidates: int
+    body_documents_read: int
+    results_returned: int
+    stale_results: int
+    fallback_used: str
+    index_levels_expanded: int
+    elapsed_ms: float
 
 
 @dataclass(frozen=True)
@@ -203,7 +218,7 @@ def _is_session_summary(relative_path: str) -> bool:
     return SESSION_SUMMARIES in PurePosixPath(relative_path).parents
 
 
-def search(
+def search_with_metrics(
     context_kg: Path,
     query: str,
     *,
@@ -213,8 +228,9 @@ def search(
     limit: int = 10,
     history: bool = False,
     include_body: bool = False,
+    index_levels_expanded: int = 0,
     now: datetime | None = None,
-) -> list[SearchResult]:
+) -> tuple[list[SearchResult], SearchMetrics]:
     """Search without writing an index or cache.
 
     Metadata is the first-stage candidate set. Body reads become visible only
@@ -229,13 +245,17 @@ def search(
         raise ValueError("query 不能为空")
     if limit <= 0:
         raise ValueError("limit 必须大于 0")
+    if index_levels_expanded < 0:
+        raise ValueError("index_levels_expanded 不能小于 0")
     current_time = now or datetime.now(timezone.utc)
     if current_time.tzinfo is None:
         current_time = current_time.replace(tzinfo=timezone.utc)
 
+    started = time.perf_counter()
     documents: list[Document] = []
     clean_scope = _clean_scope(scope)
-    for path in sorted(context_kg.rglob("*.md")):
+    paths = sorted(context_kg.rglob("*.md"))
+    for path in paths:
         if path.name in RESERVED_FILES:
             continue
         relative_path = path.relative_to(context_kg).as_posix()
@@ -265,12 +285,17 @@ def search(
             _metadata_fields(document), terms, query
         )
 
-    has_metadata_candidates = any(score for score, _, _ in metadata_hits.values())
+    metadata_candidates = sum(
+        1 for score, _, _ in metadata_hits.values() if score
+    )
+    has_metadata_candidates = metadata_candidates > 0
     use_body = include_body or (not has_metadata_candidates and bool(clean_scope))
+    body_documents_read = 0
     results: list[SearchResult] = []
     for document in documents:
         score, matched, reason = metadata_hits[document.relative_path]
         if use_body:
+            body_documents_read += 1
             score, matched, reason = _score_fields(
                 (*_metadata_fields(document), ("body", _load_body(document))),
                 terms,
@@ -290,7 +315,57 @@ def search(
             )
         )
     results.sort(key=lambda item: (-item.score, item.path))
-    return results[:limit]
+    results = results[:limit]
+    fallback_used = (
+        "explicit_body"
+        if include_body
+        else "scoped_body"
+        if use_body
+        else "none"
+    )
+    metrics = SearchMetrics(
+        markdown_discovered=len(paths),
+        documents_scanned=len(documents),
+        metadata_candidates=metadata_candidates,
+        body_documents_read=body_documents_read,
+        results_returned=len(results),
+        stale_results=sum(result.freshness == "已过 stale_after" for result in results),
+        fallback_used=fallback_used,
+        # PageIndex traversal is performed by the calling agent before this
+        # stateless candidate search, so the caller supplies the observed cost.
+        index_levels_expanded=index_levels_expanded,
+        elapsed_ms=round((time.perf_counter() - started) * 1000, 3),
+    )
+    return results, metrics
+
+
+def search(
+    context_kg: Path,
+    query: str,
+    *,
+    type_filter: str | None = None,
+    status_filter: str | None = None,
+    scope: str | None = None,
+    limit: int = 10,
+    history: bool = False,
+    include_body: bool = False,
+    index_levels_expanded: int = 0,
+    now: datetime | None = None,
+) -> list[SearchResult]:
+    """Compatibility wrapper returning candidates without telemetry."""
+    results, _ = search_with_metrics(
+        context_kg,
+        query,
+        type_filter=type_filter,
+        status_filter=status_filter,
+        scope=scope,
+        limit=limit,
+        history=history,
+        include_body=include_body,
+        index_levels_expanded=index_levels_expanded,
+        now=now,
+    )
+    return results
 
 
 def _timestamp(value: Any) -> datetime | None:
@@ -377,11 +452,35 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="不需要 query，返回 generated.at 最新的 Session Summary",
     )
+    parser.add_argument(
+        "--json", action="store_true", help="以 JSON 输出候选与检索概要指标"
+    )
+    parser.add_argument(
+        "--index-levels-expanded",
+        type=int,
+        default=0,
+        help="调用方在候选搜索前实际展开的 PageIndex 层数",
+    )
     return parser
+
+
+def _print_metrics(metrics: SearchMetrics) -> None:
+    print(
+        "检索指标："
+        f"扫描 {metrics.documents_scanned}/{metrics.markdown_discovered}；"
+        f"元数据候选 {metrics.metadata_candidates}；"
+        f"正文读取 {metrics.body_documents_read}；"
+        f"返回 {metrics.results_returned}；"
+        f"过期 {metrics.stale_results}；"
+        f"索引层数 {metrics.index_levels_expanded}；"
+        f"回退 {metrics.fallback_used}；"
+        f"{metrics.elapsed_ms:.3f} ms"
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    metrics: SearchMetrics | None = None
     try:
         if args.latest_session:
             if args.query:
@@ -389,7 +488,7 @@ def main(argv: list[str] | None = None) -> int:
             latest = latest_session(args.context_kg, history=args.history)
             results = [latest] if latest is not None else []
         else:
-            results = search(
+            results, metrics = search_with_metrics(
                 args.context_kg,
                 args.query or "",
                 type_filter=args.type_filter,
@@ -398,10 +497,18 @@ def main(argv: list[str] | None = None) -> int:
                 limit=args.limit,
                 history=args.history,
                 include_body=args.include_body,
+                index_levels_expanded=args.index_levels_expanded,
             )
     except ValueError as exc:
         print(f"错误：{exc}", file=sys.stderr)
         return 2
+    if args.json:
+        payload = {
+            "results": [asdict(result) for result in results],
+            "metrics": asdict(metrics) if metrics is not None else None,
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
     if not results:
         if args.latest_session:
             print("未找到 Session Summary。")
@@ -409,12 +516,16 @@ def main(argv: list[str] | None = None) -> int:
             print("未找到元数据候选；请用 --scope 限定正文回退范围，或显式使用 --body。")
         else:
             print("未找到候选知识。")
+        if metrics is not None:
+            _print_metrics(metrics)
         return 0
     for result in results:
         print(result.path)
         print(f"  命中字段：{', '.join(result.matched_fields)}")
         print(f"  状态/时效：{result.status}；{result.freshness}")
         print(f"  score={result.score}：{result.score_reason}")
+    if metrics is not None:
+        _print_metrics(metrics)
     return 0
 
 

@@ -1,0 +1,23 @@
+[
+  {
+    "name": "metadata-title",
+    "query": "cache",
+    "expected": ["technical/cache.md"],
+    "max_body_documents": 0
+  },
+  {
+    "name": "cross-field-chinese",
+    "query": "订单 幂等",
+    "expected": ["business/order.md"],
+    "max_body_documents": 0
+  },
+  {
+    "name": "scoped-body-fallback",
+    "query": "退款 重试",
+    "scope": "quality",
+    "index_levels_expanded": 2,
+    "expected": ["quality/refund.md"],
+    "max_body_documents": 1,
+    "expected_fallback": "scoped_body"
+  }
+]

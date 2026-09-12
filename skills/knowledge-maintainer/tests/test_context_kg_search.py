@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import tempfile
 import unittest
@@ -212,6 +213,38 @@ class ContextKgSearchTest(unittest.TestCase):
         )
         self.assertEqual("已过 stale_after", self.search("dated")[0].freshness)
 
+    def test_metrics_expose_search_cost_and_fallback(self) -> None:
+        self.concept("technical/target.md", body="rare needle")
+        self.concept("business/unrelated.md", body="rare needle")
+
+        results, metrics = MODULE.search_with_metrics(
+            self.root,
+            "rare",
+            scope="technical",
+            index_levels_expanded=2,
+            now=datetime(2026, 8, 29, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(["technical/target.md"], [result.path for result in results])
+        self.assertEqual(2, metrics.markdown_discovered)
+        self.assertEqual(1, metrics.documents_scanned)
+        self.assertEqual(0, metrics.metadata_candidates)
+        self.assertEqual(1, metrics.body_documents_read)
+        self.assertEqual("scoped_body", metrics.fallback_used)
+        self.assertEqual(2, metrics.index_levels_expanded)
+
+    def test_json_output_is_machine_readable(self) -> None:
+        self.concept("technical/cache.md", title="Cache")
+        output = StringIO()
+        with redirect_stdout(output):
+            code = MODULE.main([str(self.root), "cache", "--json"])
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(0, code)
+        self.assertEqual("technical/cache.md", payload["results"][0]["path"])
+        self.assertEqual(1, payload["metrics"]["results_returned"])
+        self.assertEqual("none", payload["metrics"]["fallback_used"])
+
     def test_cli_output_and_invalid_inputs(self) -> None:
         self.concept("technical/cache.md", title="Cache")
         output = StringIO()
@@ -221,6 +254,7 @@ class ContextKgSearchTest(unittest.TestCase):
         self.assertIn("technical/cache.md", output.getvalue())
         self.assertIn("命中字段", output.getvalue())
         self.assertIn("score=", output.getvalue())
+        self.assertIn("检索指标", output.getvalue())
 
         error = StringIO()
         with redirect_stderr(error):
